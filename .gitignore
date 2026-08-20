@@ -1,0 +1,20 @@
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editors
+*.swp
+*.swo
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Python
+__pycache__/
+*.pyc
+
+# Local scratch / test tooling artifacts — never commit real workout data
+.playwright-mcp/
+*.log
+scratch/

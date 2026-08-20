@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Entraînement</title>
+    <link rel="manifest" href="manifest.webmanifest">
+    <meta name="theme-color" content="#121212">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="Entraînement">
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            padding-top: 55px; /* Space for top bar */
+            background-color: #121212;
+            color: #e0e0e0;
+        }
+        h1 {
+            display: none; /* Hidden as requested for compact view */
+        }
+        
+        /* Top Navigation Panel */
+        .top-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 50px;
+            background-color: #1e1e1e;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+            z-index: 1000;
+        }
+
+        .tabs-container {
+            display: flex;
+            align-items: center;
+            height: 100%;
+            gap: 0;
+        }
+
+        .tab {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            padding: 0 8px;
+            background: transparent;
+            border: none;
+            color: #666;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+            gap: 6px;
+        }
+
+        .tab:hover {
+            color: #999;
+        }
+
+        .tab.active {
+            color: #e0e0e0;
+        }
+
+        .tab-icon {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .tab-icon svg, .tab-icon img {
+            width: 20px;
+            height: 20px;
+            fill: none;
+            stroke: currentColor;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+
+        .tab-icon img {
+            object-fit: contain;
+            filter: invert(1);
+            mix-blend-mode: screen;
+            opacity: 0.6;
+            transition: opacity 0.2s ease;
+        }
+
+        .tab.active .tab-icon img {
+            opacity: 1;
+        }
+
+        .tab-title {
+            font-size: 0.95em;
+            font-weight: 600;
+            display: none; /* Hidden by default */
+        }
+
+        .tab.active .tab-title {
+            display: block; /* Show only when active */
+        }
+
+        /* View Sections */
+        .view-section {
+            display: none;
+        }
+        .view-section.active {
+            display: block;
+        }
+
+        #loading {
+            text-align: center;
+            font-size: 1.2em;
+            color: #a0a0a0;
+            margin-top: 20px;
+        }
+        #error {
+            text-align: center;
+            color: #a0a0a0;
+            margin-top: 20px;
+            display: none;
+            padding: 10px;
+            background: transparent;
+            border-radius: 4px;
+            border: 1px solid #a0a0a0;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .cards-container {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .exercise-card {
+            background: #1e1e1e;
+            border-radius: 8px;
+            padding: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            transition: transform 0.2s ease, background-color 0.2s ease;
+        }
+        .exercise-card:hover {
+            transform: translateY(-2px);
+            background: #252525;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.4);
+        }
+        .exercise-name {
+            font-size: 1.1em;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 8px;
+            border-bottom: 1px solid #333333;
+            padding-bottom: 4px;
+        }
+        .exercise-details {
+            display: flex;
+            flex-direction: row;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 8px;
+        }
+        .detail-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            flex: 1;
+        }
+        .detail-label {
+            font-size: 0.75em;
+            color: #888888;
+            margin-bottom: 2px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            text-align: center;
+            white-space: nowrap;
+        }
+        .detail-value {
+            font-size: 1em;
+            font-weight: 600;
+            color: #e0e0e0;
+            text-align: center;
+        }
+        .detail-value.highlight {
+            color: #4dabf7;
+        }
+        .rpe-select {
+            font-size: 1em;
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid #444444;
+            background-color: #2a2a2a;
+            color: #e0e0e0;
+            cursor: pointer;
+        }
+        .rpe-select:focus {
+            outline: none;
+            border-color: #4dabf7;
+            box-shadow: 0 0 0 2px rgba(77,171,247,0.25);
+        }
+        .no-data {
+            text-align: center;
+            color: #888888;
+            margin-top: 10px;
+        }
+        #refreshBtn {
+            background: transparent;
+            border: none;
+            color: #666;
+            padding: 4px;
+            cursor: pointer;
+            border-radius: 50%;
+            transition: all 0.2s ease;
+            height: 32px;
+            width: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #refreshBtn:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+            color: #e0e0e0;
+        }
+        #refreshBtn svg {
+            width: 20px;
+            height: 20px;
+            stroke: currentColor;
+            stroke-width: 2;
+            fill: none;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+        
+        /* Settings Menu */
+        #settingsBtn {
+            background: transparent;
+            border: none;
+            color: #666;
+            padding: 4px;
+            cursor: pointer;
+            border-radius: 50%;
+            transition: all 0.2s ease;
+            height: 32px;
+            width: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-left: 4px;
+        }
+        #settingsBtn:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+            color: #e0e0e0;
+        }
+        #settingsBtn svg {
+            width: 20px;
+            height: 20px;
+            stroke: currentColor;
+            stroke-width: 2;
+            fill: none;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+        
+        .settings-menu {
+            position: fixed;
+            top: 60px;
+            right: 16px;
+            background: #252525;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            z-index: 2000;
+            display: none;
+            min-width: 250px;
+        }
+        .settings-menu.active {
+            display: block;
+        }
+        .settings-option {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 0;
+            border-bottom: 1px solid #333;
+        }
+        .settings-option:last-child {
+            border-bottom: none;
+        }
+        .settings-label {
+            font-size: 0.9em;
+            color: #e0e0e0;
+            flex: 1;
+        }
+        
+        /* Past Performance Line style */
+        .past-perf-line {
+            display: none; /* Hidden by default */
+            width: 100%;
+            font-size: 0.9em;
+            color: #ccc;
+            margin-top: 1px;
+            padding-top: 5px;
+            border-top: 1px solid #333;
+            font-style: italic;
+            white-space: pre-wrap;
+        }
+        
+        body.show-past-load .past-perf-line {
+            display: block;
+        }
+
+        .user-comment-line {
+            width: 100%;
+            margin-top: -2px;
+            padding-top: 8px;
+            border-top: 1px solid #333;
+            font-size: 0.9em;
+            color: #ccc;
+            font-style: italic;
+            white-space: pre-wrap;
+        }
+
+        /* Prevent double border when both are visible */
+        body.show-past-load .past-perf-line + .user-comment-line {
+            border-top: none;
+            margin-top: 0;
+            padding-top: 4px;
+        }
+
+    </style>
+</head>
+<body>
+    <div class="top-bar">
+        <div class="tabs-container">
+            <button class="tab active" onclick="switchTab('treino', this)">
+                <div class="tab-icon">
+                    <img src="icons/tab-treino.png" alt="Entraînement">
+                </div>
+                <span class="tab-title">Entraînement</span>
+            </button>
+            <button class="tab" onclick="switchTab('futuros', this)">
+                <div class="tab-icon">
+                    <img src="icons/tab-futuros.png" alt="À venir">
+                </div>
+                <span class="tab-title">À venir</span>
+            </button>
+            <button class="tab" onclick="switchTab('passados', this)">
+                <div class="tab-icon">
+                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform: scale(0.85); transform-origin: center;">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <polyline points="12 6 12 12 16 14"></polyline>
+                    </svg>
+                </div>
+                <span class="tab-title">Passé</span>
+            </button>
+        </div>
+                <div class="actions-container" style="display: flex; align-items: center; gap: 8px;">
+                    <button id="refreshBtn" onclick="refreshCache()" title="Actualiser">
+                        <svg viewBox="0 0 24 24">
+                            <path d="M23 4v6h-6"></path>
+                            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                        </svg>
+                    </button>
+                    <button id="settingsBtn" onclick="toggleSettings()" title="Paramètres">
+                        <svg viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="3"></circle>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>    
+    <div id="settings-menu" class="settings-menu">
+        <div class="settings-option">
+            <span class="settings-label">Montrer charge de l'entraînement passé</span>
+            <input type="checkbox" id="showPastLoadCheckbox" onchange="togglePastLoad(this)">
+        </div>
+    </div>
+
+    <div id="treino-view" class="view-section active">
+        <div id="loading">Chargement des données...</div>
+        <div id="error"></div>
+        <div id="content" class="container" style="display: none;"></div>
+    </div>
+
+    <div id="futuros-view" class="view-section">
+        <div class="container">
+             <div id="content-futuros" class="cards-container"></div>
+        </div>
+    </div>
+
+    <div id="passados-view" class="view-section">
+        <div id="loading-passados" style="text-align: center; margin-top: 20px; display: none;">Chargement des entraînements passé...</div>
+        <div id="error-passados" style="text-align: center; color: #a0a0a0; margin-top: 20px; display: none;"></div>
+        <div id="content-passados" class="container"></div>
+    </div>
+
+    <script src="config.js"></script>
+    <script src="auth.js"></script>
+    <script src="sheets.js"></script>
+    <script src="app.js"></script>
+    <script>
+        // Service worker registration (plan §4). Feature-guarded and wrapped so a
+        // missing API (file:// pages, older browsers) or a failed registration
+        // never breaks the app — it just runs without offline/app-shell caching.
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', function () {
+                navigator.serviceWorker.register('sw.js').catch(function (err) {
+                    console.warn('Service worker registration failed:', err);
+                });
+            });
+
+            // One-shot reload when a new service worker takes control (after
+            // skipWaiting()/clients.claim() on a fresh deploy), guarded so it can
+            // never fire twice or loop.
+            var swReloaded = false;
+            navigator.serviceWorker.addEventListener('controllerchange', function () {
+                if (swReloaded) {
+                    return;
+                }
+                swReloaded = true;
+                window.location.reload();
+            });
+        }
+    </script>
+</body>
+</html>
