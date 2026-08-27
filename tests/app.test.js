@@ -480,6 +480,399 @@ test('renderDay: runs under node with a synthetic document and produces the expe
 });
 
 // ---------------------------------------------------------------------
+// injectPastComments — merged "Séries" cells (regression: the "Passé: ..."
+// line was missing for every exercise but the first of a fused group)
+// ---------------------------------------------------------------------
+
+test('injectPastComments: a merged Séries cell carries over, so every exercise of the group gets its Passé: line', () => {
+  // Column K is filled only on the first row of the group on BOTH sheets —
+  // exactly how the real sheet fuses it, and what parseDays already
+  // compensates for when rendering.
+  const past = buildRows([
+    { at: 3, cells: jourRow('JOUR 1') },
+    { at: 4, cells: exerciseRow({ name: 'Squat', sets: '3', reps: '5', charge: '100', rpePercu: '8' }) },
+    { at: 5, cells: exerciseRow({ name: 'Leg Press', reps: '8', charge: '120', rpePercu: '7' }) },
+    { at: 6, cells: exerciseRow({ name: 'Fentes', reps: '10', charge: '20', rpePercu: '7.5' }) },
+  ]);
+  const current = buildRows([
+    { at: 3, cells: jourRow('JOUR 1') },
+    { at: 4, cells: exerciseRow({ name: 'Squat', sets: '3', reps: '5' }) },
+    { at: 5, cells: exerciseRow({ name: 'Leg Press', reps: '8' }) },
+    { at: 6, cells: exerciseRow({ name: 'Fentes', reps: '10' }) },
+  ]);
+
+  const result = App.injectPastComments({ sheet_name: 'S54', values: current }, { sheet_name: 'S53', values: past });
+
+  assert.equal(result.values[3][17], 'Passé: 3x5 @100kg RPE 8');
+  assert.equal(result.values[4][17], 'Passé: 3x8 @120kg RPE 7', 'merged group member 2 must get a Passé: line');
+  assert.equal(result.values[5][17], 'Passé: 3x10 @20kg RPE 7.5', 'merged group member 3 must get a Passé: line');
+});
+
+test('injectPastComments: a merged Séries value never leaks across a JOUR boundary or a blank row', () => {
+  const past = buildRows([
+    { at: 3, cells: jourRow('JOUR 1') },
+    { at: 4, cells: exerciseRow({ name: 'Squat', sets: '3', reps: '5', charge: '100', rpePercu: '8' }) },
+    { at: 8, cells: jourRow('JOUR 2') },
+    // No sets anywhere in JOUR 2 -> nothing to index, and JOUR 1's '3'
+    // must NOT be carried into it.
+    { at: 9, cells: exerciseRow({ name: 'Rowing', reps: '8', charge: '70', rpePercu: '7' }) },
+  ]);
+  const current = buildRows([
+    { at: 3, cells: jourRow('JOUR 2') },
+    { at: 4, cells: exerciseRow({ name: 'Rowing', reps: '8' }) },
+  ]);
+
+  const result = App.injectPastComments({ sheet_name: 'S54', values: current }, { sheet_name: 'S53', values: past });
+  assert.equal(result.values[3][17], undefined, 'no sets on either side of JOUR 2 -> no injection, no carry-over');
+
+  // A blank row between two groups resets the carry-over too.
+  const past2 = buildRows([
+    { at: 3, cells: jourRow('JOUR 1') },
+    { at: 4, cells: exerciseRow({ name: 'Squat', sets: '3', reps: '5', charge: '100', rpePercu: '8' }) },
+    { at: 5, cells: [] },
+    { at: 6, cells: exerciseRow({ name: 'Curl', reps: '12', charge: '15', rpePercu: '7' }) },
+  ]);
+  const current2 = buildRows([
+    { at: 3, cells: jourRow('JOUR 1') },
+    { at: 4, cells: exerciseRow({ name: 'Curl', sets: '4', reps: '12' }) },
+  ]);
+  const result2 = App.injectPastComments({ sheet_name: 'S54', values: current2 }, { sheet_name: 'S53', values: past2 });
+  assert.equal(result2.values[3][17], undefined, 'a blank row must clear the carried Séries value');
+});
+
+// ---------------------------------------------------------------------
+// Browser-ish harness — loads a FRESH app.js against fake window/document
+// so the stateful halves (loadPastData, updateCell/updateRPE token
+// pre-flight, flushPendingWrites) are exercised end to end through the
+// real sheets.js + auth.js with a stub fetch. Still zero network, zero
+// browser, zero real token (H3).
+// ---------------------------------------------------------------------
+
+const Config = require(path.join('..', 'config.js'));
+
+class FakeStorage {
+  constructor() { this._data = Object.create(null); this._order = []; }
+  getItem(key) { return Object.prototype.hasOwnProperty.call(this._data, key) ? this._data[key] : null; }
+  setItem(key, value) {
+    if (!Object.prototype.hasOwnProperty.call(this._data, key)) this._order.push(key);
+    this._data[key] = String(value);
+  }
+  removeItem(key) {
+    delete this._data[key];
+    const i = this._order.indexOf(key);
+    if (i !== -1) this._order.splice(i, 1);
+  }
+  key(i) { return this._order[i]; }
+  get length() { return this._order.length; }
+}
+
+class FakeClassList {
+  constructor() { this._set = new Set(); }
+  add(c) { this._set.add(c); }
+  remove(c) { this._set.delete(c); }
+  contains(c) { return this._set.has(c); }
+  toggle(c) { if (this._set.has(c)) this._set.delete(c); else this._set.add(c); }
+}
+
+class FakeNode extends FakeElement {
+  constructor(tag) {
+    super(tag);
+    this.textContent = '';
+    this.classList = new FakeClassList();
+    this.disabled = false;
+    this.checked = false;
+  }
+  set innerHTML(html) { this._innerHTML = html; if (html === '') this.children = []; }
+  get innerHTML() { return this._innerHTML; }
+  contains() { return false; }
+}
+
+class FakeDocument {
+  constructor() { this.elements = Object.create(null); this.body = new FakeNode('body'); }
+  getElementById(id) {
+    if (!this.elements[id]) this.elements[id] = new FakeNode('div');
+    return this.elements[id];
+  }
+  createElement(tag) { return new FakeNode(tag); }
+  querySelector() { return null; }
+  querySelectorAll() { return []; }
+  addEventListener() {}
+}
+
+function jsonResponse(status, body) {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    json: () => Promise.resolve(body),
+    text: () => Promise.resolve(JSON.stringify(body))
+  };
+}
+
+// Loads a fresh app.js (and with it a fresh sheetsClient) bound to fake
+// browser globals. `opts.fetchHandler(url, init)` returns a response-like.
+// Returns everything a test needs to assert on, plus restore().
+function loadAppInFakeBrowser(opts) {
+  opts = opts || {};
+  const localStorage = new FakeStorage();
+  const sessionStorage = new FakeStorage();
+  const calls = [];
+  const fetchImpl = function (url, init) {
+    calls.push({ url, init });
+    return Promise.resolve((opts.fetchHandler || (() => jsonResponse(200, {})))(url, init, calls.length - 1));
+  };
+  const location = { origin: 'http://localhost:8000', pathname: '/', search: '', hash: '', href: 'http://localhost:8000/' };
+  const fakeWindow = {
+    localStorage, sessionStorage, location,
+    fetch: fetchImpl,
+    scrollY: 0,
+    scrollTo: () => {},
+    history: { replaceState: () => {} },
+    CLIENT_ID: Config.CLIENT_ID,
+    SCOPE: Config.SCOPE,
+    SPREADSHEET_ID: Config.SPREADSHEET_ID
+  };
+  const fakeDocument = new FakeDocument();
+
+  const saved = { window: global.window, document: global.document };
+  global.window = fakeWindow;
+  global.document = fakeDocument;
+
+  const appPath = require.resolve(path.join(__dirname, '..', 'app.js'));
+  delete require.cache[appPath];
+  let FreshApp;
+  try {
+    FreshApp = require(appPath);
+  } catch (e) {
+    global.window = saved.window;
+    global.document = saved.document;
+    throw e;
+  }
+
+  return {
+    App: FreshApp,
+    window: fakeWindow,
+    document: fakeDocument,
+    localStorage,
+    sessionStorage,
+    location,
+    calls,
+    restore() {
+      delete require.cache[appPath];
+      if (saved.window === undefined) delete global.window; else global.window = saved.window;
+      if (saved.document === undefined) delete global.document; else global.document = saved.document;
+    }
+  };
+}
+
+function setToken(storage, expiresAt) {
+  storage.setItem('entr.token', JSON.stringify({ token: 'TEST_TOKEN', expiresAt }));
+}
+
+// ---------------------------------------------------------------------
+// loadPastData — the "Passé" tab must show the WHOLE previous week plus
+// the current week's completed days (regression: the old rolling window
+// deleted one previous-week day for each completed current-week day)
+// ---------------------------------------------------------------------
+
+// Builds a day block: a JOUR header, one exercise, and a post-session
+// fatigue label whose column K carries `fatiguePost` ('' = not done yet).
+function dayBlock(startRow, label, exerciseName, fatiguePost) {
+  const fatigueRow = [];
+  fatigueRow[6] = 'Niveau de fatigue après la séance';
+  fatigueRow[10] = fatiguePost;
+  return [
+    { at: startRow, cells: jourRow(label) },
+    { at: startRow + 1, cells: exerciseRow({ name: exerciseName, sets: '3', reps: '5', charge: '100' }) },
+    { at: startRow + 2, cells: fatigueRow }
+  ];
+}
+
+test('loadPastData: shows every day of the previous week plus the completed days of the current week', async () => {
+  const pastValues = buildRows([
+    ...dayBlock(3, 'JOUR 1', 'Squat', '5'),
+    ...dayBlock(8, 'JOUR 2', 'Bench', '6'),
+    ...dayBlock(13, 'JOUR 3', 'Deadlift', '7')
+  ]);
+
+  const harness = loadAppInFakeBrowser({
+    fetchHandler: (url) => {
+      if (url.indexOf('?fields=') !== -1) {
+        return jsonResponse(200, { sheets: [{ properties: { title: 'S53', hidden: false, index: 0 } }, { properties: { title: 'S54', hidden: false, index: 1 } }] });
+      }
+      if (url.indexOf('values:batchGet') !== -1) {
+        return jsonResponse(200, { valueRanges: [{ values: [['JOUR']] }, { values: [['JOUR']] }] });
+      }
+      if (url.indexOf('S53') !== -1) return jsonResponse(200, { values: pastValues });
+      return jsonResponse(200, { values: [] });
+    }
+  });
+
+  try {
+    setToken(harness.localStorage, Date.now() + 3600000);
+
+    // Current week: JOUR 1 done, JOUR 2 still open.
+    harness.window.currentData = {
+      sheet_name: 'S54',
+      values: buildRows([...dayBlock(3, 'JOUR 1', 'Squat', '4'), ...dayBlock(8, 'JOUR 2', 'Bench', '')])
+    };
+
+    await harness.App.loadPastData();
+
+    const content = harness.document.getElementById('content-passados');
+    const headers = content.children.filter((c) => c.tagName === 'h3').map((c) => c.textContent);
+
+    assert.deepEqual(
+      headers,
+      ['JOUR 1', 'JOUR 2', 'JOUR 3', 'JOUR 1'],
+      'all three previous-week days must survive, with the completed current-week day appended'
+    );
+
+    const errorEl = harness.document.getElementById('error-passados');
+    assert.notEqual(errorEl.style.display, 'block', 'no error must be shown');
+  } finally {
+    harness.restore();
+  }
+});
+
+// ---------------------------------------------------------------------
+// Token pre-flight on writes + pending-write replay
+// ---------------------------------------------------------------------
+
+test('updateCell: an expired token parks the edit and renews BEFORE any PUT goes out', async () => {
+  const harness = loadAppInFakeBrowser({});
+  try {
+    setToken(harness.localStorage, Date.now() - 1000); // already expired
+
+    const el = harness.document.createElement('input');
+    const ok = await harness.App.updateCell('S54', 12, 13, '82.5', el);
+
+    assert.equal(ok, false, 'the write must report failure, not silently claim success');
+    assert.equal(harness.calls.length, 0, 'no request may be sent with a dead token');
+
+    const parked = JSON.parse(harness.sessionStorage.getItem('entr.pendingWrites'));
+    assert.deepEqual(parked, [{ kind: 'cell', sheetName: 'S54', rowIndex: 12, colIndex: 13, value: '82.5' }]);
+
+    assert.match(harness.location.href, /^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?/, 'a renewal redirect must have started');
+    assert.match(harness.location.href, /prompt=none/, 'the renewal must be silent');
+    assert.equal(harness.localStorage.getItem('entr.token'), null, 'the dead token must be dropped');
+  } finally {
+    harness.restore();
+  }
+});
+
+test('updateRPE: an expired token parks the RPE edit too, pinned to column O', async () => {
+  const harness = loadAppInFakeBrowser({});
+  try {
+    setToken(harness.localStorage, Date.now() - 1000);
+
+    const el = harness.document.createElement('select');
+    const ok = await harness.App.updateRPE('S54', 12, '8.5', el);
+
+    assert.equal(ok, false);
+    assert.equal(harness.calls.length, 0);
+    const parked = JSON.parse(harness.sessionStorage.getItem('entr.pendingWrites'));
+    assert.deepEqual(parked, [{ kind: 'rpe', sheetName: 'S54', rowIndex: 12, colIndex: 14, value: '8.5' }]);
+  } finally {
+    harness.restore();
+  }
+});
+
+test('updateCell: a valid token goes straight to the PUT and parks nothing', async () => {
+  const harness = loadAppInFakeBrowser({ fetchHandler: () => jsonResponse(200, { updatedCells: 1 }) });
+  try {
+    setToken(harness.localStorage, Date.now() + 3600000);
+
+    const el = harness.document.createElement('input');
+    const ok = await harness.App.updateCell('S54', 12, 13, '82.5', el);
+
+    assert.equal(ok, true);
+    assert.equal(harness.calls.length, 1);
+    assert.equal(harness.calls[0].init.method, 'PUT');
+    assert.equal(harness.sessionStorage.getItem('entr.pendingWrites'), null, 'nothing may be parked on a clean write');
+    assert.equal(harness.location.href, 'http://localhost:8000/', 'no redirect on a clean write');
+  } finally {
+    harness.restore();
+  }
+});
+
+test('queuePendingWrite: a field edited twice before the redirect replays only its latest value', async () => {
+  const harness = loadAppInFakeBrowser({});
+  try {
+    setToken(harness.localStorage, Date.now() - 1000);
+    const el = harness.document.createElement('input');
+
+    await harness.App.updateCell('S54', 12, 13, '80', el);
+    await harness.App.updateCell('S54', 12, 13, '82.5', el);
+    await harness.App.updateCell('S54', 13, 13, '60', el);
+
+    const parked = JSON.parse(harness.sessionStorage.getItem('entr.pendingWrites'));
+    assert.equal(parked.length, 2, 'the same cell must be de-duplicated');
+    assert.equal(parked[0].value, '82.5', 'the latest value for that cell wins');
+    assert.equal(parked[1].rowIndex, 13);
+  } finally {
+    harness.restore();
+  }
+});
+
+test('flushPendingWrites: replays parked edits once a token is back, then clears the queue', async () => {
+  const harness = loadAppInFakeBrowser({ fetchHandler: () => jsonResponse(200, { updatedCells: 1 }) });
+  try {
+    setToken(harness.localStorage, Date.now() + 3600000);
+    harness.sessionStorage.setItem('entr.pendingWrites', JSON.stringify([
+      { kind: 'cell', sheetName: 'S54', rowIndex: 12, colIndex: 13, value: '82.5' },
+      { kind: 'rpe', sheetName: 'S54', rowIndex: 12, colIndex: 14, value: '8.5' }
+    ]));
+
+    const replayed = await harness.App.flushPendingWrites();
+
+    assert.equal(replayed, 2);
+    assert.equal(harness.calls.length, 2);
+    assert.equal(harness.calls[0].init.method, 'PUT');
+    assert.match(decodeURIComponent(harness.calls[0].url), /'S54'!N12/, 'column N (index 13), row 12');
+    assert.match(decodeURIComponent(harness.calls[1].url), /'S54'!O12/, 'RPE stays pinned to column O');
+    assert.equal(harness.sessionStorage.getItem('entr.pendingWrites'), null, 'a fully replayed queue is cleared');
+  } finally {
+    harness.restore();
+  }
+});
+
+test('flushPendingWrites: an edit that fails again stays parked for the next attempt', async () => {
+  const harness = loadAppInFakeBrowser({ fetchHandler: () => jsonResponse(500, { error: { message: 'boom' } }) });
+  try {
+    setToken(harness.localStorage, Date.now() + 3600000);
+    const entry = { kind: 'cell', sheetName: 'S54', rowIndex: 12, colIndex: 13, value: '82.5' };
+    harness.sessionStorage.setItem('entr.pendingWrites', JSON.stringify([entry]));
+
+    const replayed = await harness.App.flushPendingWrites();
+
+    assert.equal(replayed, 0);
+    assert.deepEqual(JSON.parse(harness.sessionStorage.getItem('entr.pendingWrites')), [entry]);
+  } finally {
+    harness.restore();
+  }
+});
+
+test('updateCell: a 401 on an apparently-valid token parks the edit instead of alerting', async () => {
+  const harness = loadAppInFakeBrowser({ fetchHandler: () => jsonResponse(401, { error: { message: 'Invalid Credentials' } }) });
+  try {
+    setToken(harness.localStorage, Date.now() + 3600000);
+
+    // alert() does not exist under node — if the auth path ever fell
+    // through to it, this test would throw instead of returning false.
+    const el = harness.document.createElement('input');
+    const ok = await harness.App.updateCell('S54', 12, 13, '82.5', el);
+
+    assert.equal(ok, false);
+    assert.deepEqual(JSON.parse(harness.sessionStorage.getItem('entr.pendingWrites')), [
+      { kind: 'cell', sheetName: 'S54', rowIndex: 12, colIndex: 13, value: '82.5' }
+    ]);
+    assert.match(harness.location.href, /prompt=none/, 'the 401 backstop must also renew');
+  } finally {
+    harness.restore();
+  }
+});
+
+// ---------------------------------------------------------------------
 // Source-level checks
 // ---------------------------------------------------------------------
 

@@ -6,8 +6,9 @@ directly from the browser. No backend, no database, no stored secrets. It replac
 site hosted on GitHub Pages.
 
 The app shows the current week's workout ("Entraînement"), the upcoming days ("À venir"), and the previous
-week for reference ("Passé"), including a `Passé: …` hint line ported unchanged from the old server. The
-"Perfs" (charts) tab from the old app is dropped — everything else looks and behaves the same.
+week for reference ("Passé" — the whole previous-week sheet, plus the current week's already-completed
+days), including a `Passé: …` hint line carrying last week's load for the same exercise. The "Perfs"
+(charts) tab from the old app is dropped — everything else looks and behaves the same.
 
 ## How it works
 

@@ -8,6 +8,15 @@ byte-identical column-R ("Passe:" line) output to the old server.py's
 `inject_past_exercise_comments`, using a real developer's cached Sheets
 payloads.
 
+KNOWN DELIBERATE DIVERGENCE (bug fix): app.js now carries a merged
+"Series" cell (column K) down its exercise group on both sides, the way
+parseDays already does, so an exercise that is not the first of a fused
+group gets its "Passe:" line too. server.py required a literal non-empty
+K, so it emitted nothing there. Expect mismatches on exactly those rows --
+app.js filling a column R that server.py left empty is the fix working,
+not a regression. Any mismatch where BOTH sides emit a "Passe:" line, or
+where server.py emits one and app.js does not, is still a real failure.
+
 This script contains NO real workout data. At runtime it:
   1. sed-equivalent-extracts inject_past_exercise_comments straight out of
      server.py's source text (server.py:1571-1691) and execs *only* that

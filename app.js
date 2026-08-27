@@ -70,6 +70,154 @@ function restoreAppState(appState) {
     }
 }
 
+// --- Token freshness on writes + pending-write replay ------------------
+// New code (not from academia.html — the old app's server held the
+// credential, so a browser-side token could never go stale mid-session).
+//
+// The OAuth implicit flow has no refresh token, and Google's authorization
+// endpoint refuses to render in an iframe, so the ONLY way to renew the
+// 1 h access token is a top-level prompt=none redirect. That is why an edit
+// made after the token expired used to surface as an "auth failure" alert
+// and lose the typed value: sheets.js fired the redirect from inside the
+// PUT, and the in-flight edit died with the page.
+//
+// So every write now checks the token BEFORE it goes out. If the token is
+// gone or expired, the edit is parked in sessionStorage (which survives the
+// round trip to Google), the silent renewal is started, and the queue is
+// replayed on the way back in — the user sees a brief reflow instead of an
+// error, and the value lands.
+
+var PENDING_WRITES_KEY = 'entr.pendingWrites';
+
+// RPE always lives in column O (index 14) — same constant sheets.js pins
+// updateRPE to. Only used here to give a parked RPE write a target key that
+// can be de-duplicated against the other writes on that row.
+var RPE_COL_INDEX = (SheetsAPI && typeof SheetsAPI.RPE_COLUMN_INDEX === 'number') ? SheetsAPI.RPE_COLUMN_INDEX : 14;
+
+function pendingWritesStorage() {
+    try {
+        return (typeof window !== 'undefined' && window.sessionStorage) ? window.sessionStorage : null;
+    } catch (e) {
+        return null; // Safari private mode / storage disabled
+    }
+}
+
+function readPendingWrites() {
+    var storage = pendingWritesStorage();
+    if (!storage) return [];
+    var raw = storage.getItem(PENDING_WRITES_KEY);
+    if (!raw) return [];
+    try {
+        var parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+function writePendingWrites(list) {
+    var storage = pendingWritesStorage();
+    if (!storage) return;
+    if (!list || list.length === 0) storage.removeItem(PENDING_WRITES_KEY);
+    else storage.setItem(PENDING_WRITES_KEY, JSON.stringify(list));
+}
+
+function samePendingTarget(a, b) {
+    return a.kind === b.kind && a.sheetName === b.sheetName &&
+        a.rowIndex === b.rowIndex && a.colIndex === b.colIndex;
+}
+
+// Queues one write, de-duplicated on (kind, sheet, row, col) so a field
+// edited twice before the redirect replays only its latest value.
+function queuePendingWrite(entry) {
+    if (!entry) return;
+    var list = readPendingWrites().filter(function (w) {
+        return !samePendingTarget(w, entry);
+    });
+    list.push(entry);
+    writePendingWrites(list);
+}
+
+// Renders the "Connexion à Google requise. [Se reconnecter]" prompt into
+// the given error element. Shared by the load path and the write path so
+// both dead ends look the same.
+function renderReconnectPrompt(errorEl) {
+    if (typeof document === 'undefined' || !AuthAPI) return;
+    var error = errorEl || document.getElementById('error');
+    if (!error) return;
+    error.textContent = '';
+    var msg = document.createElement('span');
+    msg.textContent = AuthAPI.MESSAGES.SIGN_IN_REQUIRED + '. ';
+    var btn = document.createElement('button');
+    btn.textContent = AuthAPI.MESSAGES.RECONNECT;
+    btn.onclick = function () { AuthAPI.reconnect(undefined, currentAppState()); };
+    error.appendChild(msg);
+    error.appendChild(btn);
+    error.style.display = 'block';
+}
+
+// The pre-flight every write goes through. Returns true when a valid token
+// is in hand and the caller may proceed. Returns false after parking
+// `pending` and starting a renewal (or, when only an interactive sign-in
+// can help, after showing the reconnect prompt with the edit still parked
+// so it replays once the user signs back in).
+function ensureTokenBeforeWrite(pending) {
+    if (!AuthAPI) return true; // no auth layer (node --test) — nothing to check
+    if (AuthAPI.getValidToken()) return true;
+
+    queuePendingWrite(pending);
+
+    if (!AuthAPI.needsReconnect()) {
+        var result = AuthAPI.handleAuthFailure(undefined, currentAppState());
+        if (result && result.status === 'redirecting') return false; // navigating now
+    }
+
+    renderReconnectPrompt();
+    return false;
+}
+
+// Backstop for the race the pre-flight cannot cover: the token was still
+// valid when the PUT left, and Google rejected it anyway (401/403, or a
+// revoked session). sheets.js already invoked the auth failure handler, so
+// all that's left is to park the edit for replay and — when no redirect is
+// under way — show the reconnect prompt. Returns true when it owned the
+// error, i.e. the caller must NOT alert.
+function handleWriteAuthFailure(err, pending) {
+    if (!err || !err.authRequired) return false;
+    queuePendingWrite(pending);
+    if (!(err.authResult && err.authResult.status === 'redirecting')) {
+        renderReconnectPrompt();
+    }
+    return true;
+}
+
+// Replays whatever the last expiry parked, oldest first. Called on load
+// once a valid token is in hand and BEFORE the network read, so the
+// re-render shows the replayed values. Anything that fails again stays
+// queued for the next attempt.
+async function flushPendingWrites() {
+    var list = readPendingWrites();
+    if (!list.length || !sheetsClient) return 0;
+
+    writePendingWrites([]); // take them off first, re-park only real failures
+
+    var failed = [];
+    for (const write of list) {
+        try {
+            if (write.kind === 'rpe') {
+                await sheetsClient.updateRPE(write.sheetName, write.rowIndex, write.value);
+            } else {
+                await sheetsClient.updateCell(write.sheetName, write.rowIndex, write.colIndex, write.value);
+            }
+        } catch (e) {
+            console.error('Pending write replay failed', write, e);
+            failed.push(write);
+        }
+    }
+    if (failed.length) writePendingWrites(failed);
+    return list.length - failed.length;
+}
+
 // injectPastComments — JS port of server.py's inject_past_exercise_comments
 // (server.py:1571-1691, read with sed per H2, never imported). Same
 // indexing ({dayNum: {lower(name): [entries]}}), same match priority (exact
@@ -80,6 +228,12 @@ function restoreAppState(appState) {
 // server.py only ever calls this with (current_tab, past_tab) — never the
 // reverse — for the /ws2/entrainement/data response; this file calls it the
 // same way, on the same two tabs.
+//
+// ONE deliberate divergence from server.py (bug fix, see fuseSets below):
+// both passes now carry a merged "Séries" cell (column K) down its exercise
+// group, exactly as parseDays does. server.py required a literal non-empty
+// K on both sides, which silently dropped the "Passé: ..." line for every
+// exercise but the first of a merged group.
 function injectPastComments(currentData, pastData) {
     if (!currentData || !currentData.values || !pastData || !pastData.values) {
         return currentData;
@@ -129,9 +283,38 @@ function injectPastComments(currentData, pastData) {
         return best;
     }
 
+    // The one row-is-an-exercise test, shared by both passes below. Same
+    // rule server.py used inline: a non-empty column G that is neither the
+    // "EXERCICE" header nor a "JOUR ..." banner.
+    function isExerciseName(name) {
+        return !!name && name.toUpperCase() !== 'EXERCICE' && name.toUpperCase().indexOf('JOUR') === -1;
+    }
+
+    // Merged "Séries" cells: the sheet fuses column K down an exercise
+    // group, so only the FIRST row of the group carries a value. parseDays
+    // already compensates ("Handle Merged Sets Cells (Fusion logic)"), but
+    // server.py's injector did not — it required a non-empty column K on
+    // both sides, so every exercise after the first in a merged group was
+    // neither indexed from the past week nor injected into the current one,
+    // and its "Passé: ..." line silently never appeared. This mirrors
+    // parseDays' rules exactly: carry the last value over a blank K on a
+    // real exercise row, reset on a row with no name (and, at the call
+    // sites, on every new JOUR).
+    function fuseSets(name, sets, state) {
+        if (isExerciseName(name)) {
+            if (sets) state.lastSets = sets;
+            else if (state.lastSets) return state.lastSets;
+        } else if (!name) {
+            state.lastSets = null;
+        }
+        return sets;
+    }
+
     // 1. Map past exercises by Day Number -> Name -> List of entries
     var pastMap = {};
     var currentPastDay = null;
+
+    var pastSets = { lastSets: null };
 
     pastValues.forEach(function (row) {
         if (row.length > 2) {
@@ -141,39 +324,41 @@ function injectPastComments(currentData, pastData) {
                 if (match) {
                     currentPastDay = parseInt(match[1], 10);
                     if (!(currentPastDay in pastMap)) pastMap[currentPastDay] = {};
+                    pastSets.lastSets = null; // new day — never carry across
                 }
             }
         }
 
-        if (currentPastDay !== null && row.length > 10) {
-            var name = cellStr(row, 6);
-            var sets = cellStr(row, 10);
+        if (currentPastDay === null) return;
 
-            if (name && name.toUpperCase() !== 'EXERCICE' && name.toUpperCase().indexOf('JOUR') === -1 && sets) {
-                var normName = name.toLowerCase();
-                var reps = cellStr(row, 11);
-                var load = cellStr(row, 13);
+        var name = cellStr(row, 6);
+        var sets = fuseSets(name, cellStr(row, 10), pastSets);
 
-                // RPE: prefer perçu (O=14), fall back to donné (M=12)
-                var rpe = cellStr(row, 14);
-                if (!rpe) rpe = cellStr(row, 12);
+        if (isExerciseName(name) && sets) {
+            var normName = name.toLowerCase();
+            var reps = cellStr(row, 11);
+            var load = cellStr(row, 13);
 
-                var entry = {
-                    sets: sets,
-                    reps: reps,
-                    load: load,
-                    rpe: rpe,
-                    load_val: parseLoadValue(load)
-                };
+            // RPE: prefer perçu (O=14), fall back to donné (M=12)
+            var rpe = cellStr(row, 14);
+            if (!rpe) rpe = cellStr(row, 12);
 
-                if (!(normName in pastMap[currentPastDay])) pastMap[currentPastDay][normName] = [];
-                pastMap[currentPastDay][normName].push(entry);
-            }
+            var entry = {
+                sets: sets,
+                reps: reps,
+                load: load,
+                rpe: rpe,
+                load_val: parseLoadValue(load)
+            };
+
+            if (!(normName in pastMap[currentPastDay])) pastMap[currentPastDay][normName] = [];
+            pastMap[currentPastDay][normName].push(entry);
         }
     });
 
     // 2. Iterate current values and inject
     var currentDayNum = null;
+    var currentSets = { lastSets: null };
 
     currentValues.forEach(function (row) {
         if (row.length > 2) {
@@ -182,53 +367,54 @@ function injectPastComments(currentData, pastData) {
                 var match = /JOUR\s*(\d+)/.exec(val);
                 if (match) {
                     currentDayNum = parseInt(match[1], 10);
+                    currentSets.lastSets = null; // new day — never carry across
                 }
             }
         }
 
-        if (currentDayNum !== null && row.length > 10) {
-            var name = cellStr(row, 6);
-            var sets = cellStr(row, 10);
+        if (currentDayNum === null) return;
 
-            if (name && name.toUpperCase() !== 'EXERCICE' && name.toUpperCase().indexOf('JOUR') === -1 && sets) {
-                var reps = cellStr(row, 11);
-                var normName = name.toLowerCase();
+        var name = cellStr(row, 6);
+        var sets = fuseSets(name, cellStr(row, 10), currentSets);
 
-                var dayExercises = pastMap[currentDayNum] || {};
-                var candidates = dayExercises[normName] || [];
+        if (isExerciseName(name) && sets) {
+            var reps = cellStr(row, 11);
+            var normName = name.toLowerCase();
 
-                var selectedPast = null;
+            var dayExercises = pastMap[currentDayNum] || {};
+            var candidates = dayExercises[normName] || [];
 
-                if (candidates.length > 0) {
-                    // Priority 1: Exact Sets AND Reps match
-                    var exactMatches = candidates.filter(function (c) {
-                        return c.sets === sets && c.reps === reps;
-                    });
+            var selectedPast = null;
 
-                    if (exactMatches.length > 0) {
-                        selectedPast = heaviest(exactMatches);
-                    } else {
-                        // Priority 2: same name, same day, heaviest
-                        selectedPast = heaviest(candidates);
-                    }
+            if (candidates.length > 0) {
+                // Priority 1: Exact Sets AND Reps match
+                var exactMatches = candidates.filter(function (c) {
+                    return c.sets === sets && c.reps === reps;
+                });
+
+                if (exactMatches.length > 0) {
+                    selectedPast = heaviest(exactMatches);
+                } else {
+                    // Priority 2: same name, same day, heaviest
+                    selectedPast = heaviest(candidates);
                 }
+            }
 
-                if (selectedPast) {
-                    var pastStr = 'Passé: ' + selectedPast.sets + 'x' + selectedPast.reps +
-                        ' @' + selectedPast.load + 'kg RPE ' + selectedPast.rpe;
+            if (selectedPast) {
+                var pastStr = 'Passé: ' + selectedPast.sets + 'x' + selectedPast.reps +
+                    ' @' + selectedPast.load + 'kg RPE ' + selectedPast.rpe;
 
-                    // Ensure column R (17) exists
-                    while (row.length < 18) row.push('');
+                // Ensure column R (17) exists
+                while (row.length < 18) row.push('');
 
-                    var currentComment = cellStr(row, 17);
+                var currentComment = cellStr(row, 17);
 
-                    // Prepend if not already present
-                    if (currentComment.indexOf('Passé:') === -1) {
-                        if (currentComment) {
-                            row[17] = pastStr + '\n\n' + currentComment;
-                        } else {
-                            row[17] = pastStr;
-                        }
+                // Prepend if not already present
+                if (currentComment.indexOf('Passé:') === -1) {
+                    if (currentComment) {
+                        row[17] = pastStr + '\n\n' + currentComment;
+                    } else {
+                        row[17] = pastStr;
                     }
                 }
             }
@@ -295,12 +481,18 @@ let pastDataLoaded = false;
             renderDaysList(futureDays, 'content-futuros', true, true);
         }
 
-// loadPastData — academia.html:583-650, one enumerated change: the
-// fetch(buildApiUrl('/ws2/entrainement/past_data')) call (Response.ok/.json
-// handling included, since that's the fetch mechanics being replaced) is
-// swapped for sheetsClient.getPastTab(), which returns the parsed
-// {sheet_name, values} directly and throws instead of returning
-// {error: ...}. The rolling-window logic below it is untouched.
+// loadPastData — academia.html:583-650, two enumerated changes:
+//   1. the fetch(buildApiUrl('/ws2/entrainement/past_data')) call
+//      (Response.ok/.json handling included, since that's the fetch
+//      mechanics being replaced) is swapped for sheetsClient.getPastTab(),
+//      which returns the parsed {sheet_name, values} directly and throws
+//      instead of returning {error: ...}.
+//   2. the "rolling window" is dropped (bug fix). It used to slice the
+//      first `currentCompletedDays.length` days off the FRONT of the
+//      previous week so the tab always held a fixed number of days, which
+//      meant last week's workouts disappeared one by one as this week
+//      progressed. The tab now shows every day of the previous week sheet
+//      plus every already-completed day of the current week.
         async function loadPastData() {
             if (pastDataLoaded) return;
             
@@ -329,20 +521,9 @@ let pastDataLoaded = false;
                     currentCompletedDays = currentDays.filter(d => d.exercises.length > 0 && d.hasFatigueValue);
                 }
 
-                // 4. Rolling Window Logic
-                // If we have completed days in current week, append them to the end.
-                // And remove the same number of days from the START of the past week.
-                const countToAdd = currentCompletedDays.length;
-                if (countToAdd > 0) {
-                    // Remove from start of pastDays (if we have enough days, otherwise just empty pastDays)
-                    if (countToAdd < pastDays.length) {
-                         pastDays = pastDays.slice(countToAdd);
-                    } else {
-                         pastDays = []; // Replaced completely by current week progress
-                    }
-                }
-
-                // Combine
+                // 4. Combine — the WHOLE previous week, then this week's
+                // completed days appended in sheet order. No trimming: every
+                // day of the previous week stays visible all week long.
                 const daysToShow = [...pastDays, ...currentCompletedDays];
 
                 if (daysToShow.length === 0) {
@@ -485,17 +666,7 @@ if (typeof document !== 'undefined') {
                 // Don't redirect again automatically (that's the loop this
                 // guards against) — show the reconnect button instead.
                 loading.style.display = 'none';
-                if (error) {
-                    error.textContent = '';
-                    const msg = document.createElement('span');
-                    msg.textContent = AuthAPI.MESSAGES.SIGN_IN_REQUIRED + '. ';
-                    const btn = document.createElement('button');
-                    btn.textContent = AuthAPI.MESSAGES.RECONNECT;
-                    btn.onclick = () => AuthAPI.reconnect(undefined, currentAppState());
-                    error.appendChild(msg);
-                    error.appendChild(btn);
-                    error.style.display = 'block';
-                }
+                renderReconnectPrompt(error);
                 return;
             }
 
@@ -538,6 +709,16 @@ if (typeof document !== 'undefined') {
             }
         } catch (e) {
             console.error('Cache render error:', e);
+        }
+
+        // --- Replay edits parked by a token expiry ---
+        // Runs before the read below so the re-render shows the values that
+        // were just replayed, not the ones the sheet had before them.
+        try {
+            const replayed = await flushPendingWrites();
+            if (replayed) console.log('Replayed ' + replayed + ' pending edit(s) after token renewal');
+        } catch (e) {
+            console.error('Pending write replay error:', e);
         }
 
         // --- Network fetch (always runs, to pick up changes made elsewhere) ---
@@ -586,13 +767,23 @@ if (typeof document !== 'undefined') {
 // server.py's pydantic layer used to apply, and write-through-patches the
 // local cache). Same yellow -> green -> normal background feedback, same
 // disabled-while-processing, same French alert() text exactly:
-// 'Erreur lors de la mise à jour du RPE : ' + err.message.
+// 'Erreur lors de la mise à jour du RPE : ' + err.message — except when the
+// failure is an expired token, which is now parked + renewed rather than
+// alerted about (see ensureTokenBeforeWrite).
 async function updateRPE(sheetName, rowIndex, value, element) {
-    if (!value) return;
+    if (!value) return false;
 
+    const pending = { kind: 'rpe', sheetName, rowIndex, colIndex: RPE_COL_INDEX, value };
     const originalBackground = element.style.backgroundColor;
     element.style.backgroundColor = '#4d3e00'; // Dark Yellow indicating processing
     element.disabled = true;
+
+    // Token pre-flight: never PUT with a dead token — park the edit and
+    // renew first. The element stays yellow (pending) while we redirect.
+    if (!ensureTokenBeforeWrite(pending)) {
+        element.disabled = false;
+        return false;
+    }
 
     try {
         await sheetsClient.updateRPE(sheetName, rowIndex, value);
@@ -602,12 +793,18 @@ async function updateRPE(sheetName, rowIndex, value, element) {
             element.style.backgroundColor = originalBackground;
             element.disabled = false;
         }, 1000);
+        return true;
 
     } catch (err) {
         console.error('Error updating RPE:', err);
+        if (handleWriteAuthFailure(err, pending)) {
+            element.disabled = false;
+            return false;
+        }
         element.style.backgroundColor = '#3a1e1e'; // Dark Red indicating error
         alert('Erreur lors de la mise à jour du RPE : ' + err.message);
         element.disabled = false;
+        return false;
     }
 }
 
@@ -616,13 +813,21 @@ async function updateRPE(sheetName, rowIndex, value, element) {
 // sheet_name, row_index, col_index, value}) -> sheetsClient.updateCell
 // (sheetName, rowIndex, colIndex, value). Same yellow -> green -> normal
 // feedback (respecting disableInput), same French alert() text exactly:
-// 'Erreur lors de la mise à jour de la cellule : ' + err.message.
+// 'Erreur lors de la mise à jour de la cellule : ' + err.message — except
+// for an expired token, parked + renewed instead of alerted about.
 async function updateCell(sheetName, rowIndex, colIndex, value, element, disableInput = true) {
-    if (value === undefined || value === null) return;
+    if (value === undefined || value === null) return false;
 
+    const pending = { kind: 'cell', sheetName, rowIndex, colIndex, value };
     const originalBackground = element.style.backgroundColor;
     element.style.backgroundColor = '#4d3e00'; // Dark Yellow indicating processing
     if (disableInput) element.disabled = true;
+
+    // Token pre-flight — see updateRPE.
+    if (!ensureTokenBeforeWrite(pending)) {
+        if (disableInput) element.disabled = false;
+        return false;
+    }
 
     try {
         await sheetsClient.updateCell(sheetName, rowIndex, colIndex, value);
@@ -632,12 +837,18 @@ async function updateCell(sheetName, rowIndex, colIndex, value, element, disable
             element.style.backgroundColor = originalBackground;
             if (disableInput) element.disabled = false;
         }, 1000);
+        return true;
 
     } catch (err) {
         console.error('Error updating Cell:', err);
+        if (handleWriteAuthFailure(err, pending)) {
+            if (disableInput) element.disabled = false;
+            return false;
+        }
         element.style.backgroundColor = '#3a1e1e'; // Dark Red indicating error
         alert('Erreur lors de la mise à jour de la cellule : ' + err.message);
         if (disableInput) element.disabled = false;
+        return false;
     }
 }
 
@@ -667,8 +878,15 @@ async function updateCell(sheetName, rowIndex, colIndex, value, element, disable
 // behaviour around it.
 async function updateFatigueCell(sheetName, rowIndex, colIndex, value, element) {
     try {
-        await updateCell(sheetName, rowIndex, colIndex, value, element);
-        
+        const written = await updateCell(sheetName, rowIndex, colIndex, value, element);
+        // The write was parked for replay (expired token) or failed — the
+        // sheet hasn't changed, so there is no next workout to load yet.
+        if (!written) return;
+
+        // Completing a day changes what "Passé" must show, so make the tab
+        // re-fetch instead of serving the list it built earlier this session.
+        pastDataLoaded = false;
+
         // Show loading state
         const loading = document.getElementById('loading');
         if(loading) {
@@ -1221,6 +1439,13 @@ if (typeof module !== 'undefined' && module.exports) {
         parseDays,
         renderDay,
         currentAppState,
-        restoreAppState
+        restoreAppState,
+        readPendingWrites,
+        writePendingWrites,
+        queuePendingWrite,
+        ensureTokenBeforeWrite,
+        handleWriteAuthFailure,
+        flushPendingWrites,
+        renderReconnectPrompt
     };
 }
