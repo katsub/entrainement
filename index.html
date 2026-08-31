@@ -300,6 +300,23 @@
             color: #e0e0e0;
             flex: 1;
         }
+        /* Version row — read-only footer of the settings menu, so a reload can
+           be checked against the version that was actually deployed. The
+           separator above it is the last .settings-option's own border-bottom
+           (that option is no longer :last-child), so don't add a second one. */
+        .settings-version {
+            padding-top: 10px;
+            font-size: 0.75em;
+            line-height: 1.5;
+            color: #666;
+        }
+        .settings-version code {
+            font-family: inherit;
+            color: #999;
+        }
+        #version-sw.stale {
+            color: #ffa94d;
+        }
         
         /* Past Performance Line style */
         .past-perf-line {
@@ -382,6 +399,10 @@
         <div class="settings-option">
             <span class="settings-label">Montrer charge de l'entraînement passé</span>
             <input type="checkbox" id="showPastLoadCheckbox" onchange="togglePastLoad(this)">
+        </div>
+        <div class="settings-version">
+            <div>Version <code id="version-value">…</code></div>
+            <div id="version-sw"></div>
         </div>
     </div>
 

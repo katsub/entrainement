@@ -70,6 +70,9 @@ No build step, no dependencies to install — it's plain HTML/CSS/JS.
 4. GitHub Pages redeploys automatically; the new version is live within a few minutes (Pages' CDN can hold
    `index.html` briefly). The service worker is registered network-first for the app shell, so an open tab
    picks up the update on next load/reload without needing a hard refresh.
+5. To confirm a device actually picked it up, open the settings menu (gear icon): it shows the
+   `CACHE_VERSION` of the JS currently running, plus the version of the shell the service worker is
+   serving. If the two disagree the service-worker line turns amber — reload once more.
 
 ## Repo layout
 

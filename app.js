@@ -570,6 +570,56 @@ if (typeof window !== 'undefined') {
 // ({showPastLoad: ...}) (localStorage, via sheets.js's settings API from
 // S3). This also fixes the iOS Safari ITP 7-day script-cookie cap that made
 // the toggle reset weekly on the iPhone.
+// renderVersionInfo — new (no academia.html counterpart). Fills the settings
+// menu's version footer.
+//
+// Two separate facts, because they fail independently:
+//   1. CACHE_VERSION from config.js — the version of the JS that is RUNNING
+//      right now. This is the one that answers "did my reload pick up the
+//      deploy?", and it is bumped by hand on every release (README, "How to
+//      release a new version").
+//   2. The service worker's live shell cache (`entr-shell-<version>`, read
+//      back from the Cache Storage API). sw.js carries its own copy of
+//      CACHE_VERSION, so the two can disagree — a stale SW still serving an
+//      old shell is exactly the failure this footer is meant to expose, and
+//      it gets flagged in amber rather than silently ignored.
+async function renderVersionInfo() {
+    if (typeof document === 'undefined') return;
+
+    const versionEl = document.getElementById('version-value');
+    const swEl = document.getElementById('version-sw');
+    const version = (typeof CACHE_VERSION !== 'undefined' && CACHE_VERSION) ? CACHE_VERSION : 'inconnue';
+
+    if (versionEl) versionEl.textContent = version;
+    if (!swEl) return;
+
+    swEl.className = '';
+
+    if (typeof caches === 'undefined' || !caches.keys) {
+        swEl.textContent = 'Service worker : indisponible';
+        return;
+    }
+
+    try {
+        const keys = await caches.keys();
+        const shellKey = keys.find(k => k.indexOf('entr-shell-') === 0);
+        if (!shellKey) {
+            swEl.textContent = 'Service worker : pas encore installé';
+            return;
+        }
+        const swVersion = shellKey.slice('entr-shell-'.length);
+        if (swVersion === version) {
+            swEl.textContent = 'Service worker : à jour';
+        } else {
+            swEl.className = 'stale';
+            swEl.textContent = 'Service worker : ' + swVersion + ' (obsolète — rechargez)';
+        }
+    } catch (e) {
+        console.warn('Version info unavailable:', e);
+        swEl.textContent = 'Service worker : inconnu';
+    }
+}
+
 function toggleSettings() {
     const menu = document.getElementById('settings-menu');
     menu.classList.toggle('active');
@@ -708,6 +758,7 @@ if (typeof document !== 'undefined') {
         // Initialize Settings (localStorage via sheetsClient, not cookies)
         const showPast = !!(sheetsClient && sheetsClient.getSettings().showPastLoad);
         const checkbox = document.getElementById('showPastLoadCheckbox');
+        renderVersionInfo();
         if (showPast) {
             document.body.classList.add('show-past-load');
             if (checkbox) checkbox.checked = true;
@@ -1493,6 +1544,7 @@ if (typeof module !== 'undefined' && module.exports) {
         loadFutureData,
         loadPastData,
         toggleSettings,
+        renderVersionInfo,
         togglePastLoad,
         refreshCache,
         updateRPE,

@@ -24,7 +24,7 @@
 // against the SW global instead. Keep this value equal to config.js's
 // CACHE_VERSION by hand; README.md's release steps say so explicitly ("bump
 // CACHE_VERSION in both config.js and sw.js").
-var CACHE_VERSION = 'entr-v3';
+var CACHE_VERSION = 'entr-v4';
 var CACHE_NAME = 'entr-shell-' + CACHE_VERSION;
 
 // Precached app shell: index.html, the four JS files, the manifest. Network-first

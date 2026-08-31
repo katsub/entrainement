@@ -958,8 +958,95 @@ test('resolveWeekTabs: days with no exercises never count as started or unfinish
 });
 
 // ---------------------------------------------------------------------
+// renderVersionInfo — the settings-menu version footer
+// ---------------------------------------------------------------------
+
+// Runs renderVersionInfo() against the fake browser with a stub Cache
+// Storage, and hands back the two elements it writes into.
+async function runVersionInfo(cacheKeys) {
+  const harness = loadAppInFakeBrowser({});
+  const saved = { version: global.CACHE_VERSION, caches: global.caches };
+  global.CACHE_VERSION = 'entr-v9';
+  if (cacheKeys === undefined) {
+    delete global.caches;
+  } else {
+    global.caches = { keys: () => Promise.resolve(cacheKeys) };
+  }
+  try {
+    await harness.App.renderVersionInfo();
+    return {
+      version: harness.document.getElementById('version-value').textContent,
+      sw: harness.document.getElementById('version-sw').textContent,
+      swClass: harness.document.getElementById('version-sw').className
+    };
+  } finally {
+    if (saved.version === undefined) delete global.CACHE_VERSION; else global.CACHE_VERSION = saved.version;
+    if (saved.caches === undefined) delete global.caches; else global.caches = saved.caches;
+    harness.restore();
+  }
+}
+
+test('renderVersionInfo: shows the running CACHE_VERSION and confirms a matching service worker', async () => {
+  const r = await runVersionInfo(['entr-shell-entr-v9']);
+  assert.equal(r.version, 'entr-v9');
+  assert.match(r.sw, /à jour/);
+  assert.equal(r.swClass, '', 'a matching service worker must not be flagged');
+});
+
+test('renderVersionInfo: flags a service worker still serving an older shell', async () => {
+  const r = await runVersionInfo(['entr-shell-entr-v8']);
+  assert.equal(r.version, 'entr-v9');
+  assert.match(r.sw, /entr-v8/);
+  assert.match(r.sw, /obsolète/);
+  assert.equal(r.swClass, 'stale');
+});
+
+test('renderVersionInfo: copes with no shell cache and with no Cache Storage at all', async () => {
+  const notInstalled = await runVersionInfo([]);
+  assert.equal(notInstalled.version, 'entr-v9');
+  assert.match(notInstalled.sw, /pas encore installé/);
+
+  const noCaches = await runVersionInfo(undefined);
+  assert.equal(noCaches.version, 'entr-v9');
+  assert.match(noCaches.sw, /indisponible/);
+});
+
+test('renderVersionInfo: falls back to "inconnue" when config.js has not loaded', async () => {
+  const harness = loadAppInFakeBrowser({});
+  const saved = { version: global.CACHE_VERSION, caches: global.caches };
+  delete global.CACHE_VERSION;
+  delete global.caches;
+  try {
+    await harness.App.renderVersionInfo();
+    assert.equal(harness.document.getElementById('version-value').textContent, 'inconnue');
+  } finally {
+    if (saved.version === undefined) delete global.CACHE_VERSION; else global.CACHE_VERSION = saved.version;
+    if (saved.caches === undefined) delete global.caches; else global.caches = saved.caches;
+    harness.restore();
+  }
+});
+
+// ---------------------------------------------------------------------
 // Source-level checks
 // ---------------------------------------------------------------------
+
+test('CACHE_VERSION is identical in config.js and sw.js, and index.html has the version footer', () => {
+  const fs = require('node:fs');
+  const read = (f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
+  const versionIn = (f) => {
+    const m = read(f).match(/var CACHE_VERSION = '([^']+)'/);
+    assert.ok(m, 'CACHE_VERSION literal not found in ' + f);
+    return m[1];
+  };
+  // sw.js keeps its own copy on purpose (it has no DOM, so it can't import
+  // config.js) — README's release steps say to bump both. This is the guard
+  // that a release didn't bump only one of them.
+  assert.equal(versionIn('sw.js'), versionIn('config.js'));
+
+  const html = read('index.html');
+  assert.match(html, /id="version-value"/);
+  assert.match(html, /id="version-sw"/);
+});
 
 test('app.js: no client secret, and no live multi-user/SBD plumbing calls', () => {
   const fs = require('node:fs');
