@@ -450,8 +450,31 @@ function switchTab(viewId, element) {
 // charts-only and are not.
 let pastDataLoaded = false;
 
-// loadFutureData — academia.html:553-581, byte-for-byte.
-        function loadFutureData() {
+// nextWeekCache — memoises the next-week sheet loadFutureData fetches, so
+// switching to "À venir" repeatedly costs one network call, not one per
+// switch. Reset next to pastDataLoaded whenever a completed day changes what
+// the other tabs must show. Shape: {title, data}.
+let nextWeekCache = null;
+
+// Heading that separates the next-week block from the rest of this week's
+// remaining days, so the two never read as one continuous list.
+function appendWeekHeading(container, label) {
+    const heading = document.createElement('h2');
+    heading.style.cssText = 'margin: 24px 0 4px 0; color: #888; text-transform: uppercase; font-size: 0.8em; letter-spacing: 1px;';
+    heading.textContent = label;
+    container.appendChild(heading);
+}
+
+// loadFutureData — academia.html:553-581, one change: the tab no longer stops
+// at the end of the current sheet.
+//
+// It only ever listed the days left in the CURRENT week, which meant it went
+// empty on the last day of a week — exactly when "what's coming up" is the
+// thing you actually want to see. It now appends next week's sheet (the one
+// resolveWeekTabs declined to promote, window.nextTitle) under its own
+// heading. Days already carrying a fatigue value are filtered out of both
+// blocks, same rule as before.
+        async function loadFutureData() {
             const content = document.getElementById('content-futuros');
             content.innerHTML = '';
 
@@ -473,12 +496,42 @@ let pastDataLoaded = false;
                 futureDays = activeDays.slice(currentIndex + 1).filter(d => !d.hasFatigueValue);
             }
 
-            if (futureDays.length === 0) {
-                content.innerHTML = '<p class="no-data">Pas encore d\'entraînements à venir cette semaine.</p>';
-                return;
+            let rendered = false;
+            if (futureDays.length > 0) {
+                renderDaysList(futureDays, 'content-futuros', true, true);
+                rendered = true;
             }
 
-            renderDaysList(futureDays, 'content-futuros', true, true);
+            // Next week's sheet, when one exists and hasn't been promoted yet.
+            const nextTitle = (typeof window !== 'undefined') ? window.nextTitle : null;
+            if (nextTitle) {
+                try {
+                    if (!nextWeekCache || nextWeekCache.title !== nextTitle) {
+                        nextWeekCache = { title: nextTitle, data: await sheetsClient.getTab(nextTitle) };
+                    }
+                    const nextData = nextWeekCache.data;
+                    const nextDays = parseDays(nextData.values, nextData.sheet_name)
+                        .filter(d => d.exercises.length > 0 && !d.hasFatigueValue);
+
+                    if (nextDays.length > 0) {
+                        appendWeekHeading(content, 'Semaine prochaine — ' + nextData.sheet_name);
+                        renderDaysList(nextDays, 'content-futuros', true, true);
+                        rendered = true;
+                    }
+                } catch (err) {
+                    // A failed fetch must not wipe the days already rendered
+                    // above; show the error only when there is nothing else.
+                    console.error('Error fetching next week data:', err);
+                    if (!rendered) {
+                        content.innerHTML = '<p class="no-data">Erreur lors du chargement de la semaine prochaine : ' + err.message + '</p>';
+                        return;
+                    }
+                }
+            }
+
+            if (!rendered) {
+                content.innerHTML = '<p class="no-data">Pas encore d\'entraînements à venir.</p>';
+            }
         }
 
 // loadPastData — academia.html:583-650, two enumerated changes:
@@ -741,7 +794,10 @@ async function resolveWeekTabs(titles, fetchTab) {
             currentTitle: prevTitle,
             currentTab: prevTab,
             pastTitle: olderTitle,
-            pastTab: olderTitle ? await fetchTab(olderTitle) : null
+            pastTab: olderTitle ? await fetchTab(olderTitle) : null,
+            // The sheet we deliberately did NOT promote — that's next week,
+            // and it's what the "À venir" tab shows once this week runs out.
+            nextTitle: lastTitle
         };
     }
 
@@ -749,7 +805,8 @@ async function resolveWeekTabs(titles, fetchTab) {
         currentTitle: lastTitle,
         currentTab: lastTab,
         pastTitle: prevTitle,
-        pastTab: prevTab
+        pastTab: prevTab,
+        nextTitle: null
     };
 }
 
@@ -814,6 +871,7 @@ if (typeof document !== 'undefined') {
                 if (cachedCurrent) {
                     const cachedPast = resolved.pastTab;
                     window.pastTitle = resolved.pastTitle;
+                    window.nextTitle = resolved.nextTitle;
                     const dataToRender = cachedPast ? injectPastComments(cachedCurrent, cachedPast) : cachedCurrent;
 
                     window.sheetName = dataToRender.sheet_name;
@@ -848,6 +906,7 @@ if (typeof document !== 'undefined') {
             const currentTab = resolved.currentTab;
             const pastTab = resolved.pastTab;
             window.pastTitle = resolved.pastTitle;
+            window.nextTitle = resolved.nextTitle;
 
             const data = pastTab ? injectPastComments(currentTab, pastTab) : currentTab;
 
@@ -1002,6 +1061,7 @@ async function updateFatigueCell(sheetName, rowIndex, colIndex, value, element) 
         // Completing a day changes what "Passé" must show, so make the tab
         // re-fetch instead of serving the list it built earlier this session.
         pastDataLoaded = false;
+        nextWeekCache = null;
 
         // Show loading state
         const loading = document.getElementById('loading');
@@ -1017,6 +1077,7 @@ async function updateFatigueCell(sheetName, rowIndex, colIndex, value, element) 
         const currentTab = resolved.currentTab;
         const pastTab = resolved.pastTab;
         window.pastTitle = resolved.pastTitle;
+        window.nextTitle = resolved.nextTitle;
 
         const data = pastTab ? injectPastComments(currentTab, pastTab) : currentTab;
 
@@ -1542,6 +1603,7 @@ if (typeof module !== 'undefined' && module.exports) {
         resolveWeekTabs,
         switchTab,
         loadFutureData,
+        appendWeekHeading,
         loadPastData,
         toggleSettings,
         renderVersionInfo,

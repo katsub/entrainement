@@ -734,6 +734,143 @@ test('loadPastData: shows every day of the previous week plus the completed days
   }
 });
 
+// Sets up "À venir" with a current week (window.currentData) and an optional
+// next-week sheet reachable over the stub fetch as window.nextTitle.
+function futureHarness(nextValues) {
+  return loadAppInFakeBrowser({
+    fetchHandler: (url) => {
+      if (url.indexOf('S56') !== -1) {
+        if (!nextValues) return jsonResponse(500, { error: 'boom' });
+        return jsonResponse(200, { values: nextValues });
+      }
+      return jsonResponse(200, { values: [] });
+    }
+  });
+}
+
+function futureHeadings(harness) {
+  const content = harness.document.getElementById('content-futuros');
+  return content.children
+    .filter((c) => c.tagName === 'h3' || c.tagName === 'h2')
+    .map((c) => c.tagName + ':' + c.textContent);
+}
+
+test('loadFutureData: on the last day of the week, shows next week instead of going empty', async () => {
+  const harness = futureHarness(buildRows([
+    ...dayBlock(3, 'JOUR 1', 'Squat', ''),
+    ...dayBlock(8, 'JOUR 2', 'Bench', '')
+  ]));
+  try {
+    setToken(harness.localStorage, Date.now() + 3600000);
+    // Current week: JOUR 1 done, JOUR 2 is the workout in progress -> nothing
+    // left after it, which is exactly when the tab used to render empty.
+    harness.window.currentData = {
+      sheet_name: 'S55',
+      values: buildRows([...dayBlock(3, 'JOUR 1', 'Squat', '5'), ...dayBlock(8, 'JOUR 2', 'Bench', '')])
+    };
+    harness.window.nextTitle = 'S56';
+
+    await harness.App.loadFutureData();
+
+    assert.deepEqual(futureHeadings(harness), [
+      'h2:Semaine prochaine — S56',
+      'h3:JOUR 1',
+      'h3:JOUR 2'
+    ]);
+  } finally {
+    harness.restore();
+  }
+});
+
+test('loadFutureData: this week\'s remaining days come first, then next week under its heading', async () => {
+  const harness = futureHarness(buildRows([...dayBlock(3, 'JOUR 1', 'Squat', '')]));
+  try {
+    setToken(harness.localStorage, Date.now() + 3600000);
+    // JOUR 1 done, JOUR 2 in progress, JOUR 3 still ahead.
+    harness.window.currentData = {
+      sheet_name: 'S55',
+      values: buildRows([
+        ...dayBlock(3, 'JOUR 1', 'Squat', '5'),
+        ...dayBlock(8, 'JOUR 2', 'Bench', ''),
+        ...dayBlock(13, 'JOUR 3', 'Deadlift', '')
+      ])
+    };
+    harness.window.nextTitle = 'S56';
+
+    await harness.App.loadFutureData();
+
+    assert.deepEqual(futureHeadings(harness), [
+      'h3:JOUR 3',
+      'h2:Semaine prochaine — S56',
+      'h3:JOUR 1'
+    ]);
+  } finally {
+    harness.restore();
+  }
+});
+
+test('loadFutureData: the next-week sheet is fetched once, not on every tab switch', async () => {
+  const harness = futureHarness(buildRows([...dayBlock(3, 'JOUR 1', 'Squat', '')]));
+  try {
+    setToken(harness.localStorage, Date.now() + 3600000);
+    harness.window.currentData = { sheet_name: 'S55', values: buildRows([...dayBlock(3, 'JOUR 1', 'Squat', '')]) };
+    harness.window.nextTitle = 'S56';
+
+    await harness.App.loadFutureData();
+    await harness.App.loadFutureData();
+    await harness.App.loadFutureData();
+
+    const s56Calls = harness.calls.filter((c) => c.url.indexOf('S56') !== -1);
+    assert.equal(s56Calls.length, 1, 'the memo must survive repeated switches to the tab');
+  } finally {
+    harness.restore();
+  }
+});
+
+test('loadFutureData: a failed next-week fetch does not wipe the days already rendered', async () => {
+  const harness = futureHarness(null); // S56 responds 500
+  try {
+    setToken(harness.localStorage, Date.now() + 3600000);
+    harness.window.currentData = {
+      sheet_name: 'S55',
+      values: buildRows([...dayBlock(3, 'JOUR 1', 'Squat', ''), ...dayBlock(8, 'JOUR 2', 'Bench', '')])
+    };
+    harness.window.nextTitle = 'S56';
+
+    await harness.App.loadFutureData();
+
+    assert.deepEqual(futureHeadings(harness), ['h3:JOUR 2'], "this week's remaining day must survive the failure");
+  } finally {
+    harness.restore();
+  }
+});
+
+test('loadFutureData: no next sheet and nothing left this week still reports the empty state', async () => {
+  const harness = futureHarness(null);
+  try {
+    harness.window.currentData = { sheet_name: 'S55', values: buildRows([...dayBlock(3, 'JOUR 1', 'Squat', '')]) };
+    harness.window.nextTitle = null;
+
+    await harness.App.loadFutureData();
+
+    const content = harness.document.getElementById('content-futuros');
+    assert.match(content.innerHTML, /Pas encore d'entraînements à venir/);
+  } finally {
+    harness.restore();
+  }
+});
+
+test('resolveWeekTabs: nextTitle is the sheet that was held back, and null once it is current', async () => {
+  const tabs = { S55: weekTab('S55'), S56: weekTab('S56') };
+  const held = await App.resolveWeekTabs(['S55', 'S56'], fetcherFor(tabs));
+  assert.equal(held.currentTitle, 'S55');
+  assert.equal(held.nextTitle, 'S56', 'the sheet not promoted is next week');
+
+  const promoted = await App.resolveWeekTabs(['S55', 'S56'], fetcherFor({ S55: weekTab('S55', 8), S56: weekTab('S56') }));
+  assert.equal(promoted.currentTitle, 'S56');
+  assert.equal(promoted.nextTitle, null, 'there is no sheet beyond the newest one');
+});
+
 // ---------------------------------------------------------------------
 // Token pre-flight on writes + pending-write replay
 // ---------------------------------------------------------------------

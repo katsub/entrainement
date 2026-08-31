@@ -23,7 +23,7 @@
   // Bumped on every release that changes cached app-shell files or the
   // localStorage cache shape. Used by sw.js (cache name suffix) and by
   // sheets.js (localStorage key namespacing / invalidation).
-  var CACHE_VERSION = 'entr-v4';
+  var CACHE_VERSION = 'entr-v5';
 
   var CONFIG = {
     CLIENT_ID: CLIENT_ID,
