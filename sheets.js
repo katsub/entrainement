@@ -372,7 +372,14 @@
         }
 
         writeMetaCache(client.storage, qualifying, client.now());
-        var protectedTitles = [qualifying[qualifying.length - 1], qualifying[qualifying.length - 2]];
+        // Three, not two: when the current-week window slides back onto an
+        // unfinished previous week (app.js resolveWeekTabs), the sheet at
+        // -3 becomes the "past" one and must survive the prune too.
+        var protectedTitles = [
+          qualifying[qualifying.length - 1],
+          qualifying[qualifying.length - 2],
+          qualifying[qualifying.length - 3]
+        ];
         pruneCache(client, protectedTitles);
         return qualifying;
       });

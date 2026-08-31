@@ -873,6 +873,91 @@ test('updateCell: a 401 on an apparently-valid token parks the edit instead of a
 });
 
 // ---------------------------------------------------------------------
+// resolveWeekTabs — which sheet counts as "this week"
+// ---------------------------------------------------------------------
+
+// A one-JOUR week sheet. `fatigue` undefined -> the day is unfinished.
+function weekTab(title, fatigue) {
+  const specs = [
+    { at: 3, cells: jourRow('JOUR 1') },
+    { at: 4, cells: exerciseRow({ name: 'Squat', sets: '3', reps: '5', charge: '100' }) },
+  ];
+  if (fatigue !== undefined) {
+    specs.push({ at: 5, cells: (() => { const r = []; r[10] = String(fatigue); r[15] = 'Fatigue post-séance'; return r; })() });
+  }
+  return { sheet_name: title, values: buildRows(specs) };
+}
+
+function fetcherFor(tabs) {
+  return (title) => Promise.resolve(tabs[title] || null);
+}
+
+test('resolveWeekTabs: an untouched newest sheet does not steal the week from an unfinished previous one', async () => {
+  const tabs = {
+    S54: weekTab('S54', 7),
+    S55: weekTab('S55'),        // previous week, still unfinished
+    S56: weekTab('S56'),        // new sheet, never started
+  };
+  const r = await App.resolveWeekTabs(['S54', 'S55', 'S56'], fetcherFor(tabs));
+
+  assert.equal(r.currentTitle, 'S55', 'the unfinished week must stay current');
+  assert.equal(r.pastTitle, 'S54', 'the past window must slide back with it');
+  assert.equal(r.currentTab, tabs.S55);
+  assert.equal(r.pastTab, tabs.S54);
+});
+
+test('resolveWeekTabs: the newest sheet becomes current as soon as one of its days is completed', async () => {
+  const tabs = {
+    S54: weekTab('S54', 7),
+    S55: weekTab('S55'),        // left unfinished on purpose — user moved on
+    S56: weekTab('S56', 6),     // started
+  };
+  const r = await App.resolveWeekTabs(['S54', 'S55', 'S56'], fetcherFor(tabs));
+
+  assert.equal(r.currentTitle, 'S56');
+  assert.equal(r.pastTitle, 'S55');
+});
+
+test('resolveWeekTabs: a fully completed previous week hands over to the new sheet', async () => {
+  const tabs = { S55: weekTab('S55', 8), S56: weekTab('S56') };
+  const r = await App.resolveWeekTabs(['S55', 'S56'], fetcherFor(tabs));
+
+  assert.equal(r.currentTitle, 'S56');
+  assert.equal(r.pastTitle, 'S55');
+});
+
+test('resolveWeekTabs: sliding back with no older sheet leaves pastTitle null, not the current week', async () => {
+  const tabs = { S55: weekTab('S55'), S56: weekTab('S56') };
+  const r = await App.resolveWeekTabs(['S55', 'S56'], fetcherFor(tabs));
+
+  assert.equal(r.currentTitle, 'S55');
+  assert.equal(r.pastTitle, null);
+  assert.equal(r.pastTab, null);
+});
+
+test('resolveWeekTabs: a single sheet, and a cache miss, both fall back to the plain -1/-2 window', async () => {
+  const only = { S56: weekTab('S56') };
+  const single = await App.resolveWeekTabs(['S56'], fetcherFor(only));
+  assert.equal(single.currentTitle, 'S56');
+  assert.equal(single.pastTitle, null);
+
+  // Cache-first path: the previous tab isn't in localStorage yet.
+  const miss = await App.resolveWeekTabs(['S55', 'S56'], fetcherFor({ S56: weekTab('S56') }));
+  assert.equal(miss.currentTitle, 'S56', 'an unavailable previous tab must not shift the window');
+  assert.equal(miss.pastTitle, 'S55');
+});
+
+test('resolveWeekTabs: days with no exercises never count as started or unfinished', async () => {
+  const empty = { sheet_name: 'S56', values: buildRows([{ at: 3, cells: jourRow('JOUR 1') }]) };
+  assert.equal(App.weekIsStarted(empty), false);
+  assert.equal(App.weekHasUnfinishedDay(empty), false);
+
+  // S56 has only empty day headers -> not started; S55 unfinished -> stays current.
+  const r = await App.resolveWeekTabs(['S55', 'S56'], fetcherFor({ S55: weekTab('S55'), S56: empty }));
+  assert.equal(r.currentTitle, 'S55');
+});
+
+// ---------------------------------------------------------------------
 // Source-level checks
 // ---------------------------------------------------------------------
 

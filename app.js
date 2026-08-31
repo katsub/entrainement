@@ -506,11 +506,24 @@ let pastDataLoaded = false;
 
             try {
                 // 1. Fetch Previous Week Data
-                const pastDataRaw = await sheetsClient.getPastTab();
+                // The past sheet is whichever one resolveWeekTabs put behind the
+                // current week — not blindly index -2, which is the wrong sheet
+                // whenever the window has slid back onto an unfinished week.
+                // window.pastTitle is undefined only when no load has resolved a
+                // window yet; null means "resolved, and there is no older sheet"
+                // (don't fall back to getPastTab() there — index -2 would be the
+                // current week itself).
+                const resolvedPastTitle = (typeof window !== 'undefined') ? window.pastTitle : undefined;
+                let pastDataRaw = null;
+                if (resolvedPastTitle) {
+                    pastDataRaw = await sheetsClient.getTab(resolvedPastTitle);
+                } else if (resolvedPastTitle === undefined) {
+                    pastDataRaw = await sheetsClient.getPastTab();
+                }
 
                 // 2. Parse Past Data
                 let pastDays = [];
-                if (pastDataRaw.values) {
+                if (pastDataRaw && pastDataRaw.values) {
                     pastDays = parseDays(pastDataRaw.values, pastDataRaw.sheet_name).filter(d => d.exercises.length > 0);
                 }
 
@@ -637,6 +650,59 @@ async function refreshCache() {
 //     loss", not the read path). A network failure with nothing cached
 //     falls back to the original French error string, unchanged:
 //     'Erreur lors du chargement des données : ' + err.message.
+
+// resolveWeekTabs — new (no academia.html counterpart). The old code always
+// treated the LAST qualifying sheet as "this week" and the one before it as
+// "past". That's wrong the moment the next week's sheet exists but the
+// current one still has unfinished days: the training tab jumped straight to
+// JOUR 1 of the new sheet while the user was still mid-week.
+//
+// The rule now: the newest sheet only becomes current once it has actually
+// been STARTED (at least one day with a fatigue value). Until then, if the
+// previous sheet still has an unfinished day, that previous sheet stays
+// current and the window slides back one (past becomes the sheet before it).
+//
+// `fetchTab(title)` returns the {sheet_name, values} tab or null/undefined
+// when it isn't available (the cache-first path passes a cache lookup, which
+// can miss). A missing tab simply leaves the default -1/-2 pair in place.
+function weekActiveDays(data) {
+    if (!data || !data.values) return [];
+    return parseDays(data.values, data.sheet_name).filter(d => d.exercises.length > 0);
+}
+
+function weekIsStarted(data) {
+    return weekActiveDays(data).some(d => d.hasFatigueValue);
+}
+
+function weekHasUnfinishedDay(data) {
+    return weekActiveDays(data).some(d => !d.hasFatigueValue);
+}
+
+async function resolveWeekTabs(titles, fetchTab) {
+    const lastTitle = titles[titles.length - 1];
+    const prevTitle = titles.length > 1 ? titles[titles.length - 2] : null;
+
+    const lastTab = await fetchTab(lastTitle);
+    const prevTab = prevTitle ? await fetchTab(prevTitle) : null;
+
+    if (lastTab && prevTab && !weekIsStarted(lastTab) && weekHasUnfinishedDay(prevTab)) {
+        const olderTitle = titles.length > 2 ? titles[titles.length - 3] : null;
+        return {
+            currentTitle: prevTitle,
+            currentTab: prevTab,
+            pastTitle: olderTitle,
+            pastTab: olderTitle ? await fetchTab(olderTitle) : null
+        };
+    }
+
+    return {
+        currentTitle: lastTitle,
+        currentTab: lastTab,
+        pastTitle: prevTitle,
+        pastTab: prevTab
+    };
+}
+
 if (typeof document !== 'undefined') {
     document.addEventListener('DOMContentLoaded', async () => {
         // Initialize Settings (localStorage via sheetsClient, not cookies)
@@ -692,11 +758,11 @@ if (typeof document !== 'undefined') {
             const cachedMeta = sheetsClient.getCachedMeta();
             if (cachedMeta && cachedMeta.workoutSheets && cachedMeta.workoutSheets.length > 0) {
                 const titles = cachedMeta.workoutSheets;
-                const currentTitle = titles[titles.length - 1];
-                const cachedCurrent = sheetsClient.getCachedTab(currentTitle);
+                const resolved = await resolveWeekTabs(titles, t => sheetsClient.getCachedTab(t));
+                const cachedCurrent = resolved.currentTab;
                 if (cachedCurrent) {
-                    const pastTitle = titles.length > 1 ? titles[titles.length - 2] : null;
-                    const cachedPast = pastTitle ? sheetsClient.getCachedTab(pastTitle) : null;
+                    const cachedPast = resolved.pastTab;
+                    window.pastTitle = resolved.pastTitle;
                     const dataToRender = cachedPast ? injectPastComments(cachedCurrent, cachedPast) : cachedCurrent;
 
                     window.sheetName = dataToRender.sheet_name;
@@ -727,11 +793,10 @@ if (typeof document !== 'undefined') {
             if (!titles || titles.length === 0) {
                 throw new Error('Aucune feuille d\'entraînement trouvée.');
             }
-            const currentTitle = titles[titles.length - 1];
-            const pastTitle = titles.length > 1 ? titles[titles.length - 2] : null;
-
-            const currentTab = await sheetsClient.getTab(currentTitle);
-            const pastTab = pastTitle ? await sheetsClient.getTab(pastTitle) : null;
+            const resolved = await resolveWeekTabs(titles, t => sheetsClient.getTab(t));
+            const currentTab = resolved.currentTab;
+            const pastTab = resolved.pastTab;
+            window.pastTitle = resolved.pastTitle;
 
             const data = pastTab ? injectPastComments(currentTab, pastTab) : currentTab;
 
@@ -897,11 +962,10 @@ async function updateFatigueCell(sheetName, rowIndex, colIndex, value, element) 
 
         // Refresh cache and re-render (was: fetch(refresh) + location.reload())
         const titles = await sheetsClient.listWorkoutSheets();
-        const currentTitle = titles[titles.length - 1];
-        const pastTitle = titles.length > 1 ? titles[titles.length - 2] : null;
-
-        const currentTab = await sheetsClient.getTab(currentTitle);
-        const pastTab = pastTitle ? await sheetsClient.getTab(pastTitle) : null;
+        const resolved = await resolveWeekTabs(titles, t => sheetsClient.getTab(t));
+        const currentTab = resolved.currentTab;
+        const pastTab = resolved.pastTab;
+        window.pastTitle = resolved.pastTitle;
 
         const data = pastTab ? injectPastComments(currentTab, pastTab) : currentTab;
 
@@ -1421,6 +1485,10 @@ async function updateFatigueCell(sheetName, rowIndex, colIndex, value, element) 
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         injectPastComments,
+        weekActiveDays,
+        weekIsStarted,
+        weekHasUnfinishedDay,
+        resolveWeekTabs,
         switchTab,
         loadFutureData,
         loadPastData,
