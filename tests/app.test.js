@@ -1043,16 +1043,17 @@ test('resolveWeekTabs: an untouched newest sheet does not steal the week from an
   assert.equal(r.pastTab, tabs.S54);
 });
 
-test('resolveWeekTabs: the newest sheet becomes current as soon as one of its days is completed', async () => {
+test('resolveWeekTabs: an unfinished previous week stays current even if the newest sheet has already been started', async () => {
   const tabs = {
     S54: weekTab('S54', 7),
-    S55: weekTab('S55'),        // left unfinished on purpose — user moved on
-    S56: weekTab('S56', 6),     // started
+    S55: weekTab('S55'),        // still has an unfinished day — must stay current
+    S56: weekTab('S56', 6),     // started, but must not steal current until S55 is done
   };
   const r = await App.resolveWeekTabs(['S54', 'S55', 'S56'], fetcherFor(tabs));
 
-  assert.equal(r.currentTitle, 'S56');
-  assert.equal(r.pastTitle, 'S55');
+  assert.equal(r.currentTitle, 'S55', 'the unfinished week must stay current even though the newest sheet has been started');
+  assert.equal(r.pastTitle, 'S54');
+  assert.equal(r.nextTitle, 'S56');
 });
 
 test('resolveWeekTabs: a fully completed previous week hands over to the new sheet', async () => {

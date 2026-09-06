@@ -760,10 +760,10 @@ async function refreshCache() {
 // current one still has unfinished days: the training tab jumped straight to
 // JOUR 1 of the new sheet while the user was still mid-week.
 //
-// The rule now: the newest sheet only becomes current once it has actually
-// been STARTED (at least one day with a fatigue value). Until then, if the
-// previous sheet still has an unfinished day, that previous sheet stays
-// current and the window slides back one (past becomes the sheet before it).
+// The rule now: the current week stays current until every one of its
+// days carries a post-séance fatigue value. The newest sheet only becomes
+// current once the previous one is fully completed — simply creating S57
+// (or even starting it) must not hide S56's last unfinished workout.
 //
 // `fetchTab(title)` returns the {sheet_name, values} tab or null/undefined
 // when it isn't available (the cache-first path passes a cache lookup, which
@@ -788,7 +788,7 @@ async function resolveWeekTabs(titles, fetchTab) {
     const lastTab = await fetchTab(lastTitle);
     const prevTab = prevTitle ? await fetchTab(prevTitle) : null;
 
-    if (lastTab && prevTab && !weekIsStarted(lastTab) && weekHasUnfinishedDay(prevTab)) {
+    if (lastTab && prevTab && weekHasUnfinishedDay(prevTab)) {
         const olderTitle = titles.length > 2 ? titles[titles.length - 3] : null;
         return {
             currentTitle: prevTitle,
