@@ -224,8 +224,12 @@
   }
 
   function readSettings(storage) {
+    // The "Passé: ..." hint line is a core feature (README), so it is ON
+    // unless the user explicitly turned it off. An explicit false stays
+    // false; a fresh device (no stored settings) gets true, so the line
+    // never silently disappears after a reinstall / storage wipe.
     var parsed = storageGet(storage, STORAGE_KEYS.SETTINGS);
-    var merged = { showPastLoad: false };
+    var merged = { showPastLoad: true };
     if (parsed && typeof parsed === 'object') {
       Object.keys(parsed).forEach(function (k) {
         merged[k] = parsed[k];

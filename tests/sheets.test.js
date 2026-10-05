@@ -558,17 +558,17 @@ test('pruneCache removes only stale + unprotected entr.tab.* entries', () => {
 // settings
 // ---------------------------------------------------------------------
 
-test('getSettings defaults showPastLoad to false, setSettings merges and persists', () => {
+test('getSettings defaults showPastLoad to true, setSettings merges and persists', () => {
   const storage = new FakeStorage();
   const client = makeClient({ storage });
 
-  assert.deepEqual(client.getSettings(), { showPastLoad: false });
-
-  client.setSettings({ showPastLoad: true });
   assert.deepEqual(client.getSettings(), { showPastLoad: true });
 
+  client.setSettings({ showPastLoad: false });
+  assert.deepEqual(client.getSettings(), { showPastLoad: false });
+
   const fresh = makeClient({ storage });
-  assert.deepEqual(fresh.getSettings(), { showPastLoad: true });
+  assert.deepEqual(fresh.getSettings(), { showPastLoad: false });
 });
 
 // ---------------------------------------------------------------------

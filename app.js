@@ -679,6 +679,7 @@ function toggleSettings() {
 }
 
 function togglePastLoad(checkbox) {
+    if (!sheetsClient) return; // no storage layer (e.g. node --test) — nothing to persist
     if (checkbox.checked) {
         document.body.classList.add('show-past-load');
         sheetsClient.setSettings({ showPastLoad: true });
