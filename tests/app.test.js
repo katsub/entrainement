@@ -479,6 +479,54 @@ test('renderDay: runs under node with a synthetic document and produces the expe
   }
 });
 
+test('renderDay: reps is an editable input when blank or 0, static otherwise', () => {
+  const fakeDocument = { createElement: (tag) => new FakeElement(tag) };
+  const previousDocument = global.document;
+  global.document = fakeDocument;
+  try {
+    const makeDay = (reps) => ({
+      name: 'JOUR 1',
+      sheetName: 'TestSheet',
+      hasFatigueValue: false,
+      fatiguePhysique: null,
+      fatiguePsy: null,
+      fatiguePost: null,
+      comment: null,
+      exercises: [
+        { name: 'Squat', sets: '3', reps, rpe: '', load: '', rowIndex: 4, currentRpe: '', comment: '' },
+      ],
+    });
+
+    const renderExerciseHtml = (reps, isReadOnly = false) => {
+      const container = new FakeElement('div');
+      App.renderDay(makeDay(reps), container, isReadOnly, true);
+      return container.children[0].children[0].innerHTML;
+    };
+
+    const blankHtml = renderExerciseHtml('');
+    assert.match(blankHtml, /<input[^>]*value=""/);
+    assert.match(blankHtml, /debouncedUpdateCell\('TestSheet', 4, 11,/);
+    assert.match(blankHtml, /updateCell\('TestSheet', 4, 11,/);
+
+    const zeroHtml = renderExerciseHtml('0');
+    assert.match(zeroHtml, /<input[^>]*value="0"/);
+    assert.match(zeroHtml, /updateCell\('TestSheet', 4, 11,/);
+
+    const normalHtml = renderExerciseHtml('5');
+    assert.doesNotMatch(normalHtml, /<input[^>]*11,/);
+    assert.match(normalHtml, /class="detail-value highlight">5</);
+
+    const readOnlyHtml = renderExerciseHtml('', true);
+    assert.doesNotMatch(readOnlyHtml, /<input/);
+  } finally {
+    if (previousDocument === undefined) {
+      delete global.document;
+    } else {
+      global.document = previousDocument;
+    }
+  }
+});
+
 // ---------------------------------------------------------------------
 // injectPastComments — merged "Séries" cells (regression: the "Passé: ..."
 // line was missing for every exercise but the first of a fused group)

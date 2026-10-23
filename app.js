@@ -1413,6 +1413,19 @@ async function updateFatigueCell(sheetName, rowIndex, colIndex, value, element) 
                 const card = document.createElement('div');
                 card.className = 'exercise-card';
 
+                const repsValue = (ex.reps === null || ex.reps === undefined) ? '' : ex.reps.toString().trim();
+                const repsNeedsInput = repsValue === '' || repsValue === '0';
+                let repsHtml = `<span class="detail-value highlight">${ex.reps}</span>`;
+                if (!isReadOnly && repsNeedsInput) {
+                    repsHtml = `
+                        <input type="text" class="rpe-select"
+                               style="width: 60px; text-align: center;"
+                               value="${repsValue}"
+                               oninput="debouncedUpdateCell('${sheetName}', ${ex.rowIndex}, 11, this.value, this)"
+                               onchange="updateCell('${sheetName}', ${ex.rowIndex}, 11, this.value, this)" />
+                    `;
+                }
+
                 let detailsHtml = `
                     <div class="detail-item">
                         <span class="detail-label">Séries</span>
@@ -1420,7 +1433,7 @@ async function updateFatigueCell(sheetName, rowIndex, colIndex, value, element) 
                     </div>
                     <div class="detail-item">
                         <span class="detail-label">reps</span>
-                        <span class="detail-value highlight">${ex.reps}</span>
+                        ${repsHtml}
                     </div>
                 `;
 
