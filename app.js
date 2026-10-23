@@ -1414,7 +1414,8 @@ async function updateFatigueCell(sheetName, rowIndex, colIndex, value, element) 
                 card.className = 'exercise-card';
 
                 const repsValue = (ex.reps === null || ex.reps === undefined) ? '' : ex.reps.toString().trim();
-                const repsNeedsInput = repsValue === '' || repsValue === '0';
+                const repsNumber = parseFloat(repsValue.replace(',', '.'));
+                const repsNeedsInput = repsValue === '' || isNaN(repsNumber) || repsNumber <= 0;
                 let repsHtml = `<span class="detail-value highlight">${ex.reps}</span>`;
                 if (!isReadOnly && repsNeedsInput) {
                     repsHtml = `

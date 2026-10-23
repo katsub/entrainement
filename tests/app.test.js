@@ -512,6 +512,10 @@ test('renderDay: reps is an editable input when blank or 0, static otherwise', (
     assert.match(zeroHtml, /<input[^>]*value="0"/);
     assert.match(zeroHtml, /updateCell\('TestSheet', 4, 11,/);
 
+    const amrapHtml = renderExerciseHtml('AMRAP');
+    assert.match(amrapHtml, /<input[^>]*value="AMRAP"/);
+    assert.match(amrapHtml, /updateCell\('TestSheet', 4, 11,/);
+
     const normalHtml = renderExerciseHtml('5');
     assert.doesNotMatch(normalHtml, /<input[^>]*11,/);
     assert.match(normalHtml, /class="detail-value highlight">5</);
